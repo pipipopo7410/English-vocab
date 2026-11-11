@@ -1,1 +1,18 @@
-{"name":"單字日課｜會考2000字","short_name":"單字日課","description":"浮動輕量／標準30／衝刺50，搭配主題例句與間隔複習","start_url":"./index.html","display":"standalone","lang":"zh-TW","background_color":"#f4f8fb","theme_color":"#edf5f8","icons":[]}
+{
+  "name": "單字日課｜會考單字學習",
+  "short_name": "單字日課",
+  "description": "聽例句、每天複習、保存學習進度",
+  "id": "./index.html",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e9f4ff",
+  "theme_color": "#e9f4ff",
+  "lang": "zh-TW",
+  "orientation": "any",
+  "icons": [
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "./icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

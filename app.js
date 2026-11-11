@@ -2,7 +2,7 @@
 (()=>{'use strict';
 const EXAM='2027-05-15', FINAL_STUDY='2027-05-14', GOALS=[15,30,50], GOAL_NAMES={15:'輕量組・浮動',30:'標準組',50:'考前衝刺組'};
 const ROOT=document.getElementById('view-root');
-let WORDS=[],WORDS_BY_ID=new Map(),supabase=null,cloudUser=null,isTeacher=false,view='home';
+let WORDS=[],WORDS_BY_ID=new Map(),supabase=null,cloudUser=null,view='home',cloudReady=false,syncStatus='local',pendingSync=false,syncTimer=null,installPrompt=null,stateRevision=0;
 let localKey='vocab-daily-v3:guest',S=emptyState(),activeWordId=null,activeMode='e2c',answered=false,lastCorrect=false;
 let calendarCursor='',libraryPage=0,libraryQuery='',libraryLevel='all',currentClass=null,teacherClasses=[];
 let syncChain=Promise.resolve(),toastTimer=null,advanceTimer=null,libraryTopic='all';
@@ -36,7 +36,7 @@ function lightMetrics(){const remaining=unseenCount();const days=Math.max(1,diff
  return {dailyNew,days,due,reviews,planned,remaining};
 }
 function dayGoal(d){return d?.goal|| (S.settings.goal===15?lightMetrics().planned:S.settings.goal);}
-function goalLabel(d){const mode=d?.mode||S.settings.goal;return GOAL_NAMES[mode]||'每日任務';}
+function goalLabel(d){if(d?.kind==='review')return '再練一次';if(d?.kind==='preview')return '預習新單字';const mode=d?.mode||S.settings.goal;return GOAL_NAMES[mode]||'每日任務';}
 function chooseUnseen(count,already){const groups=TOPICS.map(topic=>({topic,arr:WORDS.filter(w=>!everLearned(w)&&!already.has(w.id)&&groupOf(w)===topic)})).filter(g=>g.arr.length);
  // 主題情境輪替，不把同義或同類詞一整排塞在一起。
  groups.sort((a,b)=>(hashId(today()+'|'+a.topic)%997)-(hashId(today()+'|'+b.topic)%997));
@@ -54,7 +54,7 @@ function chooseUnseen(count,already){const groups=TOPICS.map(topic=>({topic,arr:
  return selected;
 }
 
-function emptyState(){return {settings:{goal:30,nickname:'本機使用者'},progress:{},days:{},updatedAt:null};}
+function emptyState(){return {settings:{goal:30,nickname:'本機使用者',voiceRate:0.86},progress:{},days:{},extraSession:null,updatedAt:null};}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function dateTaipei(d=new Date()){const obj=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${obj.year}-${obj.month}-${obj.day}`;}
 function addDays(date,number){const d=new Date(`${date}T12:00:00+08:00`);d.setUTCDate(d.getUTCDate()+number);return dateTaipei(d);}
@@ -64,9 +64,54 @@ function today(){return dateTaipei();}
 function yesterday(){return addDays(today(),-1);}
 function notify(msg){const t=document.getElementById('toast');t.textContent=msg;t.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.hidden=true,4200);}
 function loadLocal(k){try{const d=JSON.parse(localStorage.getItem(k));if(d && d.settings && d.progress && d.days)return {...emptyState(),...d};}catch(e){}return emptyState();}
-function persist(){S.updatedAt=new Date().toISOString();localStorage.setItem(localKey,JSON.stringify(S));if(cloudUser)queueProgressSync();}
-function queueProgressSync(){if(!cloudUser||!supabase)return;const userId=cloudUser.id;const snapshot=JSON.parse(JSON.stringify(S));syncChain=syncChain.then(async()=>{const {error}=await supabase.from('student_progress').upsert({user_id:userId,payload:snapshot,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)throw error;}).catch(e=>{console.warn('Progress sync failed',e.message);return null;});}
-async function syncProfile(){if(!cloudUser)return;const {error}=await supabase.from('profiles').upsert({user_id:cloudUser.id,nickname:S.settings.nickname.slice(0,40)},{onConflict:'user_id'});if(error)console.warn('Profile sync failed',error.message);}
+function updateSyncTag(){const el=document.getElementById('connect-tag');if(!el)return;
+ const label={local:'本機記錄',pending:'待備份',synced:'☁ 已備份',error:'⚠ 備份失敗'};
+ el.textContent=cloudUser?(label[syncStatus]||'帳號已登入'):(localKey!=='vocab-daily-v3:guest'?'離線・待登入':'本機記錄');el.title=cloudUser?'進度保存於本機與帳號雲端':(localKey!=='vocab-daily-v3:guest'?'正在使用此裝置最近登入帳號的本機快取，登入並同步後才有雲端備份':'未登入時，進度僅保存於此裝置');
+ const note=document.getElementById('sync-indicator');if(note)note.textContent=cloudUser?(label[syncStatus]||'帳號已登入'):(localKey!=='vocab-daily-v3:guest'?'待重新登入並同步':'尚未登入 · 僅本機保存');
+}
+function persist(){stateRevision+=1;S.updatedAt=new Date().toISOString();localStorage.setItem(localKey,JSON.stringify(S));if(cloudUser&&cloudReady){pendingSync=true;syncStatus='pending';updateSyncTag();queueProgressSync();}}
+// 將相同帳號在不同裝置的字詞紀錄與已完成日期保留；同一日期同字詞取較新的作答紀錄。
+function latestStamp(obj){return obj?.entryUpdatedAt||obj?.lastAttempt||obj?.lastSuccess||'';}
+function mergeStates(a,b){if(!a||!a.settings||!a.progress||!a.days)return {...emptyState(),...b};if(!b||!b.settings||!b.progress||!b.days)return {...emptyState(),...a};
+ const newer=(a.updatedAt||'')>=(b.updatedAt||'')?a:b,other=newer===a?b:a;
+ const merged={...emptyState(),...newer,settings:{...emptyState().settings,...newer.settings},progress:{},days:{}};
+ for(const id of new Set([...Object.keys(a.progress),...Object.keys(b.progress)])){
+  const x=a.progress[id],y=b.progress[id];if(!WORDS_BY_ID.has(id))continue;
+  if(!x||!y)merged.progress[id]=x||y;
+  else {const primary=latestStamp(x)>=latestStamp(y)?x:y,secondary=primary===x?y:x;
+   merged.progress[id]={...primary,successDays:Math.max(x.successDays||0,y.successDays||0)};
+   if((secondary.lastSuccess||'')>(primary.lastSuccess||''))merged.progress[id].lastSuccess=secondary.lastSuccess;
+  }
+ }
+ for(const date of new Set([...Object.keys(a.days),...Object.keys(b.days)])){
+  const x=a.days[date],y=b.days[date];if(!x||!y){merged.days[date]=x||y;continue;}
+  const best=(x.finished!==y.finished)?(x.finished?x:y):((x.passed?.length||0)>=(y.passed?.length||0)?x:y);
+  merged.days[date]=best;
+ }
+ const exA=a.extraSession,exB=b.extraSession;
+ merged.extraSession=(!exA||!exB)?(exA||exB||null):(exA.startedAt>=exB.startedAt?exA:exB);
+ merged.updatedAt=newer.updatedAt||other.updatedAt||null;return merged;
+}
+function queueProgressSync(){if(!cloudUser||!cloudReady||!supabase)return;
+ clearTimeout(syncTimer);syncTimer=setTimeout(()=>{syncTimer=null;flushCloudBackup();},900);
+}
+function flushCloudBackup(){if(!cloudUser||!cloudReady||!supabase)return Promise.resolve(false);
+ const userId=cloudUser.id;
+ syncChain=syncChain.then(async()=>{
+  if(!cloudUser||cloudUser.id!==userId||!cloudReady)return false;
+  if(!pendingSync)return true;
+  try{const response=await supabase.from('student_progress').select('payload').eq('user_id',userId).maybeSingle();
+   if(response.error)throw response.error;
+   const beginRevision=stateRevision;const merged=mergeStates(S,response.data?.payload);merged.updatedAt=new Date().toISOString();
+   const {error}=await supabase.from('student_progress').upsert({user_id:userId,payload:merged,updated_at:merged.updatedAt},{onConflict:'user_id'});
+   if(error)throw error;
+   if(cloudUser?.id!==userId)return false;
+   S=mergeStates(S,merged);localStorage.setItem(localKey,JSON.stringify(S));
+   pendingSync=stateRevision!==beginRevision;syncStatus=pendingSync?'pending':'synced';updateSyncTag();if(pendingSync)queueProgressSync();return true;
+  }catch(e){console.warn('Cloud backup failed',e);pendingSync=true;syncStatus='error';updateSyncTag();return false;}
+ });return syncChain;
+}
+async function syncProfile(){if(!cloudUser||!supabase)return;const {error}=await supabase.from('profiles').upsert({user_id:cloudUser.id,nickname:S.settings.nickname.slice(0,40)},{onConflict:'user_id'});if(error)console.warn('Profile sync failed',error.message);}
 function sessionToday(){return S.days[today()]||null;}
 function profile(word){return S.progress[word.id]||null;}
 function everLearned(w){const p=profile(w);return !!(p&&(p.lastSuccess||p.successDays>0));}
@@ -86,12 +131,13 @@ function goalButtons(){const current=S.settings.goal,locked=!!sessionToday(),m=l
  <button class="goal-btn ${current===50?'selected':''}" data-goal="50" aria-pressed="${current===50}"><span class="goal-name">🚀 考前衝刺</span><b>50<small> 個／天</small></b><span>固定配額</span></button></div>${locked?'<p class="help">今日任務已開始，切換組別從明天生效。</p>':''}`;}
 
 function progressBar(done,total){return `<div class="progress-track"><div style="width:${total?Math.min(100,done/total*100):0}%"></div></div><div class="progress-meta"><span>${done} / ${total} 詞目</span><span>${total?Math.round(done/total*100):0}%</span></div>`;}
-function renderHome(){const day=sessionToday(),g=dayGoal(day),passed=day?.passed?.length||0,projection=dateProjection(),finish=day?.finished,m=lightMetrics();
- ROOT.innerHTML=hero()+`<section class="panel home-task"><div class="section-head"><div><h2>🎯 今日任務</h2><p>${goalLabel(day)} · ${g} 個</p></div><span class="pill ${finish?'good':''}">${finish?(day.cloudConfirmedAt?'☑ 已完成':'✓ 已完成'):(day?'進行中':'未開始')}</span></div>${progressBar(passed,g)}<button id="start-study" class="button wide big-action">${finish?'查看完成紀錄':day?'繼續複習 →':'開始今日練習 →'}</button></section>`+
+function renderHome(){const day=sessionToday(),g=dayGoal(day),passed=day?.passed?.length||0,projection=dateProjection(),finish=day?.finished,m=lightMetrics(),extra=S.extraSession?.day===today()&&!S.extraSession.finished?S.extraSession:null;
+ ROOT.innerHTML=hero()+`<section class="panel home-task"><div class="section-head"><div><h2>🎯 今日任務</h2><p>${goalLabel(day)} · ${g} 個</p></div><span class="pill ${finish?'good':''}">${finish?(day.cloudConfirmedAt?'☑ 已完成':'✓ 已完成'):(day?'進行中':'未開始')}</span></div>${progressBar(passed,g)}<button id="start-study" class="button wide big-action">${finish?'查看完成紀錄':day?'繼續複習 →':'開始今日練習 →'}</button>${finish?`<div class="extra-actions"><button id="extra-review-home" class="extra-btn review">🔁 再練一次</button><button id="extra-preview-home" class="extra-btn preview" ${unseenCount()===0?'disabled':''}>🚀 預習明天</button></div>${extra?`<button id="extra-resume-home" class="button outline wide" style="margin-top:10px">繼續${extra.kind==='review'?'複習':'預習'} · ${extra.passed.length}/${extra.goal}</button>`:''}`:''}</section>`+
  `<section class="panel"><div class="section-head"><div><h2>📆 每日學習量</h2><p>輕量組會每天重新計算</p></div></div>${goalButtons()}</section>`+
  `<div class="cards"><div class="stat-card accent-blue"><div class="label">首次答對</div><strong>${WORDS.length-unseenCount()}</strong><small>／${WORDS.length}</small></div><div class="stat-card accent-mint"><div class="label">待複習</div><strong>${dueCount()}</strong></div><div class="stat-card accent-peach"><div class="label">已熟練</div><strong>${matureCount()}</strong></div></div>`+
  `<section class="panel small-summary"><div class="section-head"><div><h2>🏁 首輪預估</h2></div><strong class="big-date">${formatDay(projection.date)}</strong></div><p class="muted small">剩下 ${projection.remaining} 個尚未首次答對的字${S.settings.goal===15?` · ${m.dailyNew} 個新字／天`:''}</p></section>`;
  ROOT.querySelector('#start-study').addEventListener('click',()=>finish?showFinished(day):startStudy());ROOT.querySelectorAll('[data-goal]').forEach(b=>b.addEventListener('click',()=>setGoal(+b.dataset.goal)));
+ if(finish){ROOT.querySelector('#extra-review-home').onclick=()=>startExtra('review');ROOT.querySelector('#extra-preview-home').onclick=()=>startExtra('preview');if(extra)ROOT.querySelector('#extra-resume-home').onclick=()=>renderQuiz(true);}
 }
 function setGoal(goal){if(!GOALS.includes(goal))return;S.settings.goal=goal;persist();renderHome();notify(`已設定「${GOAL_NAMES[goal]}」${goal} 個／天${sessionToday()?'，明天起使用新設定':''}`);}
 function startPlan(mode){
@@ -117,16 +163,25 @@ function startPlan(mode){
  const goal=chosen.length;
  return {mode,goal,plan:chosen,queue:[...chosen],passed:[],fails:{},startedAt:new Date().toISOString(),finished:false,finishedAt:null,cloudConfirmedAt:null,cloudSyncedPasses:[]};
 }
-async function startStudy(){let d=sessionToday();if(!d){d=startPlan(S.settings.goal);S.days[today()]=d;persist();}if(cloudUser){try{const {data,error}=await supabase.rpc('begin_day',{p_goal:d.goal});if(error)throw error;if(Number(data)!==d.goal){
-   if(d.passed.length===0 && Number.isInteger(Number(data)) && Number(data)>0 && Number(data)<=WORDS.length){
-     d=startPlan(d.mode||S.settings.goal);if(d.goal!==Number(data)){const ids=d.plan.slice(0,Number(data));if(ids.length<Number(data)){notify('雲端配額和本機任務無法一致，請重新登入後再試。');showView('home');return;}d.goal=Number(data);d.plan=ids;d.queue=[...ids];}S.days[today()]=d;persist();notify(`雲端今日配額已固定為 ${data} 個，已調整本機任務。`);
-   }else{
-     notify(`雲端今日配額是 ${data} 個，本機是 ${d.goal} 個。為避免完成紀錄錯誤，請在同一裝置完成或聯絡導師。`);
-     showView('home');return;
-   }
- }await syncDailyCloud(d);}catch(e){notify('雲端暫時無法同步：可以本機練習，但導師紀錄尚未成立。');}}
- if(d.finished){showFinished(d);return;} renderQuiz();}
+async function startStudy(){let d=sessionToday();if(!d){d=startPlan(S.settings.goal);S.days[today()]=d;persist();}if(d.finished){showFinished(d);return;} renderQuiz();}
 function hashId(str){let h=2166136261;for(const c of str){h=Math.imul(h^c.charCodeAt(0),16777619);}return h>>>0;}
+// 彈性練習只更新詞彙熟練度與首輪進度，不新增隔日的完成簽到。
+function extraQuota(kind){if(kind==='review')return sessionToday()?.plan?.length||0;
+ if(S.settings.goal===15){const daysLeft=Math.max(1,diffDays(today(),FINAL_STUDY));return Math.min(unseenCount(),Math.max(1,Math.ceil(unseenCount()/daysLeft)));}
+ return Math.min(unseenCount(),S.settings.goal);
+}
+function startExtra(kind){const todayDay=sessionToday();if(!todayDay?.finished){notify('先完成今天的任務，再自由加練。');return;}
+ let plan=[];if(kind==='review'){plan=shuffle([...(todayDay.plan||todayDay.passed||[])]);}else if(kind==='preview'){
+  const quota=extraQuota(kind);plan=chooseUnseen(quota,new Set());
+ }else return;
+ if(!plan.length){notify(kind==='preview'?'字庫都已接觸過了，可以選擇再練一次。':'今天尚無可複習的單字。');return;}
+ S.extraSession={kind,day:today(),goal:plan.length,plan:[...plan],queue:[...plan],passed:[],fails:{},startedAt:new Date().toISOString(),finished:false,finishedAt:null};persist();renderQuiz(true);
+}
+function finishExtra(d){if(!d.finished){d.finished=true;d.finishedAt=new Date().toISOString();persist();}}
+function showExtraFinished(d){showView('extra-finished');ROOT.innerHTML=`<section class="panel center success-panel"><div class="success-icon">${d.kind==='review'?'🔁':'🚀'}</div><h1>${d.kind==='review'?'複習完成！':'預習完成！'}</h1><p>這一輪練習了 <b>${d.passed.length}</b> 個詞目。</p><span class="pill good">今日任務已完成</span><div class="actions" style="justify-content:center"><button id="extra-again" class="button">${d.kind==='review'?'再練一次':'繼續預習'}</button><button class="button secondary" data-view="home">回首頁</button></div></section>`;
+ ROOT.querySelector('#extra-again').onclick=()=>startExtra(d.kind);
+ ROOT.querySelector('[data-view="home"]').onclick=()=>showView('home');
+}
 function questionMode(w,day){const prog=profile(w);if(!prog||prog.stage===0)return 'e2c';
  // 熟字才逐步導入產出性練習；克漏字保留情境，拼寫不顯示答案。
  const mod=hashId(w.id+today())%10;
@@ -142,29 +197,38 @@ function distractors(w,mode){const base=WORDS.filter(a=>a.id!==w.id && a.level==
  // 相同詞性優先，減少「完全不同類型」的選項；仍排除與目標中文直譯重複者
  const pos=x=>(x.speech||'').split(/[./]/)[0];const mainPos=pos(w);const same=shuffle(base.filter(x=>mainPos&&pos(x)===mainPos));const rest=shuffle(base.filter(x=>!same.includes(x)));const selected=[];const meanings=new Set([cnMain(w)]);
  for(const x of [...same,...rest]){if(mode==='e2c'&&meanings.has(cnMain(x)))continue;if(selected.length>=3)break;selected.push(x);meanings.add(cnMain(x));}return selected;}
-function renderQuiz(){view='quiz';clearTimeout(advanceTimer);advanceTimer=null;
- const d=sessionToday();if(!d)return showView('home');if(d.queue.length===0){finishDay(d);showFinished(d);return;}
- const id=d.queue[0],w=WORDS_BY_ID.get(id);if(!w){d.queue.shift();persist();return renderQuiz();}
+function renderQuiz(isExtra=false){view=isExtra?'extra-quiz':'quiz';clearTimeout(advanceTimer);advanceTimer=null;
+ const d=isExtra?S.extraSession:sessionToday();if(!d)return showView('home');if(d.queue.length===0){if(isExtra){finishExtra(d);showExtraFinished(d);}else{finishDay(d);showFinished(d);}return;}
+ const id=d.queue[0],w=WORDS_BY_ID.get(id);if(!w){d.queue.shift();persist();return renderQuiz(isExtra);}
  activeWordId=id;activeMode=questionMode(w,d);answered=false;const mode=activeMode;
  const choices=shuffle([w,...distractors(w,mode)]);let question='',prompt='';
  if(mode==='e2c'){prompt='選出中文意思';question=w.word;}
  else if(mode==='c2e'){prompt='選出英文單字';question=w.chinese;}
  else if(mode==='spell'){prompt='試著拼出英文';question=w.chinese;}
  else{prompt='用例句找出正確的字';question=w.chinese;}
- // 中翻英、拼寫、克漏字：例句先出現，答案單字先挖空，避免直接洩題。
  const example=sentenceFor(w,mode!=='e2c');
- ROOT.innerHTML=`<div class="quiz-top"><button id="quiz-back" class="button outline">← 返回</button><span class="wordmark">${goalLabel(d)} · ${d.passed.length}/${d.goal}</span></div><section class="quiz-card"><div class="quiz-inline"><b>${d.passed.length} / ${d.goal}</b>${progressBarOnly(d.passed.length,d.goal)}</div><div class="divider"></div><div class="quiz-prompt">${esc(prompt)}</div><div class="quiz-word">${esc(question)}</div><div class="context-example"><span class="example-mark">📖 例句</span><p>${esc(example)}</p></div>${mode==='spell'?'<form id="spell-form" class="spell-form"><input id="spell-input" type="text" aria-label="輸入英文拼寫" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="輸入英文" required maxlength="50"><button class="button" type="submit">確認</button></form>':`<div id="options" class="options">${choices.map((option,i)=>`<button class="option" data-opt="${esc(option.id)}"><span class="muted small">${i+1}.</span> ${esc(mode==='e2c'?option.chinese:option.word)}</button>`).join('')}</div>`}<div id="answer-box" hidden></div><div class="quiz-bottom"><button id="sound-btn" class="button secondary">🔊 發音</button><button id="quiz-next" class="button" hidden>下一題 →</button></div></section>`;
- ROOT.querySelector('#quiz-back').onclick=()=>showView('home');ROOT.querySelector('#sound-btn').onclick=()=>speak(w.word);
+ ROOT.innerHTML=`<div class="quiz-top"><button id="quiz-back" class="button outline">← 返回</button><span class="wordmark">${goalLabel(d)} · ${d.passed.length}/${d.goal}</span></div><section class="quiz-card"><div class="quiz-inline"><b>${d.passed.length} / ${d.goal}</b>${progressBarOnly(d.passed.length,d.goal)}</div><div class="divider"></div><div class="quiz-prompt">${esc(prompt)}</div><div class="quiz-word">${esc(question)}</div><div class="context-example"><div class="example-row"><span class="example-mark">📖 情境例句</span><button id="sound-sentence" type="button" class="listen-btn" aria-label="朗讀情境例句">🔊 聽例句</button></div><p>${esc(example)}</p></div>${mode==='spell'?'<form id="spell-form" class="spell-form"><input id="spell-input" type="text" aria-label="輸入英文拼寫" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="輸入英文" required maxlength="50"><button class="button" type="submit">確認</button></form>':`<div id="options" class="options">${choices.map((option,i)=>`<button class="option" data-opt="${esc(option.id)}"><span class="muted small">${i+1}.</span> ${esc(mode==='e2c'?option.chinese:option.word)}</button>`).join('')}</div>`}<div id="answer-box" hidden></div><div class="quiz-bottom"><button id="sound-btn" class="button secondary" ${mode!=='e2c'?'hidden':''}>🔈 單字發音</button><button id="quiz-next" class="button" hidden>下一題 →</button></div></section>`;
+ ROOT.querySelector('#quiz-back').onclick=()=>showView('home');ROOT.querySelector('#sound-btn').onclick=()=>speak(w.word);ROOT.querySelector('#sound-sentence').onclick=()=>speak(sentenceFor(w,mode!=='e2c'&&!answered).replace(/_{3,}/g,' ... '));
  ROOT.querySelectorAll('[data-opt]').forEach(b=>b.addEventListener('click',()=>answer(b.dataset.opt)));
  if(mode==='spell'){ROOT.querySelector('#spell-form').onsubmit=e=>{e.preventDefault();answer(ROOT.querySelector('#spell-input').value);};ROOT.querySelector('#spell-input').focus();}
- ROOT.querySelector('#quiz-next').onclick=()=>{clearTimeout(advanceTimer);if(d.finished)showFinished(d);else renderQuiz();};
+ ROOT.querySelector('#quiz-next').onclick=()=>{clearTimeout(advanceTimer);if(d.finished){isExtra?showExtraFinished(d):showFinished(d);}else renderQuiz(isExtra);};
 }
 function progressBarOnly(done,total){return `<div class="progress-track" style="flex:1"><div style="width:${Math.round(done/total*100)}%"></div></div>`;}
-function speak(word){if(!('speechSynthesis' in window)){notify('此裝置沒有提供語音朗讀。');return;}speechSynthesis.cancel();const v=new SpeechSynthesisUtterance(word);v.lang='en-US';v.rate=.86;speechSynthesis.speak(v);}
+function speak(text){if(!('speechSynthesis' in window)||!window.SpeechSynthesisUtterance){notify('此裝置無法使用語音朗讀。');return;}
+ try{window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(String(text));u.lang='en-US';u.rate=Number(S.settings.voiceRate)||0.86;u.pitch=1;
+ const voices=window.speechSynthesis.getVoices();const english=voices.find(v=>/^en-US/i.test(v.lang))||voices.find(v=>/^en/i.test(v.lang));if(english)u.voice=english;
+ u.onerror=e=>{if(e.error!=='canceled'&&e.error!=='interrupted')notify('語音未能播放，請檢查手機音量或系統英文語音設定。');};
+ window.speechSynthesis.speak(u);
+ }catch(e){notify('無法播放語音。');console.warn(e);}}
 function updateLearning(word,correct,failedBefore){const old=S.progress[word.id]||{stage:0,seenOn:today(),successDays:0,lastSuccess:null};let nextStage=0,days=1,successDays=old.successDays||0;
- if(correct){nextStage=failedBefore?0:Math.min(7,old.stage+1);days=([1,1,3,7,14,30,60,90][nextStage]||90);if(old.lastSuccess!==today())successDays+=1;}
- S.progress[word.id]={...old,stage:nextStage,nextDue:addDays(today(),days),successDays,lastSuccess:correct?today():old.lastSuccess,lastAttempt:today()};}
-function answer(chosenId){const d=sessionToday();if(!d||answered)return;const w=WORDS_BY_ID.get(activeWordId);if(!w)return;
+ if(correct){
+  // 同一日反覆答對，不可把 1、3、7 天的間隔一路灌到 90 天。
+  nextStage=failedBefore?0:old.lastSuccess===today()?Math.max(0,old.stage):Math.min(7,old.stage+1);
+  days=([1,1,3,7,14,30,60,90][nextStage]||90);
+  if(old.lastSuccess!==today())successDays+=1;
+ }
+ S.progress[word.id]={...old,stage:nextStage,nextDue:addDays(today(),days),successDays,lastSuccess:correct?today():old.lastSuccess,lastAttempt:today(),entryUpdatedAt:new Date().toISOString()};}
+function answer(chosenId){const isExtra=view==='extra-quiz',d=isExtra?S.extraSession:sessionToday();if(!d||answered)return;const w=WORDS_BY_ID.get(activeWordId);if(!w)return;
  const normalize=s=>String(s||'').trim().toLocaleLowerCase().replace(/\s+/g,' ');
  const right=activeMode==='spell'?[w.word,...w.aliases].some(alias=>normalize(alias)===normalize(chosenId)):chosenId===w.id;
  answered=true;lastCorrect=right;
@@ -172,58 +236,67 @@ function answer(chosenId){const d=sessionToday();if(!d||answered)return;const w=
  if(activeMode==='spell'){const input=ROOT.querySelector('#spell-input');input.disabled=true;ROOT.querySelector('#spell-form button').disabled=true;input.classList.add(right?'correct-input':'wrong-input');}
  if(right){const hadMistake=!!d.fails[w.id];updateLearning(w,true,hadMistake);d.passed.push(w.id);d.queue.shift();}
  else{updateLearning(w,false,false);d.fails[w.id]=(d.fails[w.id]||0)+1;d.queue.shift();d.queue.splice(Math.min(2,d.queue.length),0,w.id);}
- persist();if(right&&cloudUser)submitCloudPass(w.id,d);
+ persist();
  const panel=ROOT.querySelector('#answer-box');panel.hidden=false;panel.className='answer-panel';
  if(right){panel.innerHTML='<b>✓ 答對了！</b>';}else{
   panel.innerHTML=`<b>再記一下 👀</b><p><strong>${esc(w.word)}</strong> · ${esc(w.chinese)}</p><p class="small">${esc(sentenceFor(w))}</p>`;
  }
- const next=ROOT.querySelector('#quiz-next');next.hidden=right;next.textContent=d.queue.length?'下一題 →':'查看今日完成';
+ const wordSound=ROOT.querySelector('#sound-btn');wordSound.hidden=false;ROOT.querySelector('#sound-sentence').setAttribute('aria-label','朗讀完整例句');const next=ROOT.querySelector('#quiz-next');next.hidden=right;next.textContent=d.queue.length?'下一題 →':(isExtra?'查看練習成果':'查看今日完成');
  ROOT.querySelector('.quiz-inline b').textContent=`${d.passed.length} / ${d.goal}`;
  ROOT.querySelector('.quiz-inline .progress-track>div').style.width=`${d.passed.length/d.goal*100}%`;
- if(d.queue.length===0)finishDay(d);
- if(right){advanceTimer=setTimeout(()=>{advanceTimer=null;if(view==='quiz'&&sessionToday()===d){if(d.finished)showFinished(d);else renderQuiz();}},520);}
+ if(d.queue.length===0){if(isExtra)finishExtra(d);else finishDay(d);}
+ if(right){advanceTimer=setTimeout(()=>{advanceTimer=null;if(view===(isExtra?'extra-quiz':'quiz')&&(isExtra?S.extraSession===d:sessionToday()===d)){if(d.finished){isExtra?showExtraFinished(d):showFinished(d);}else renderQuiz(isExtra);}},520);}
 }
-function finishDay(d){if(!d.finished){d.finished=true;d.finishedAt=new Date().toISOString();persist();if(cloudUser)queueFinishCloud(d);} }
-function showFinished(d){showView('finished');ROOT.innerHTML=`<section class="panel center success-panel"><div class="success-icon">🌿</div><h1>今天完成了！</h1><p>你今天完成了 <b>${d.passed.length}</b> 個詞目的練習。</p><span class="pill ${d.cloudConfirmedAt?'good':''}">${d.cloudConfirmedAt?'雲端已記錄':'本機完成紀錄'}</span><p class="help">${cloudUser?(d.cloudConfirmedAt?'明天導師就能看到完成紀錄。':'若要讓導師查核，請保持網路並重新開啟一次。'):'未登入雲端帳號時，只會留在這台裝置。'}</p><div class="actions" style="justify-content:center"><button class="button" data-view="calendar">看月曆</button><button class="button secondary" data-view="home">回首頁</button></div></section>`;
- ROOT.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
+function finishDay(d){if(!d.finished){d.finished=true;d.finishedAt=new Date().toISOString();persist();}}
+function showFinished(d,studyDate=today()){const isToday=studyDate===today();showView('finished');ROOT.innerHTML=`<section class="panel center success-panel"><div class="receipt-card" id="receipt-card"><div class="receipt-symbol">✓</div><div class="receipt-kicker">單字日課 · 學習完成</div><h1>任務完成！</h1><div class="receipt-user">${esc(S.settings.nickname||'學習者')}</div><div class="receipt-date">${formatDay(studyDate)} <span>台灣時間</span></div><div class="receipt-number">${d.passed.length}<small> / ${d.goal} 個</small></div><div class="receipt-bottom">🌟 每天累積一點點</div></div><p class="receipt-tip">📸 截圖完成卡，傳給老師</p><div class="sync-small" id="sync-indicator">${cloudUser?'雲端備份狀態：'+syncStatus:'尚未登入 · 僅本機保存'}</div>${isToday?`<div class="extra-actions"><button id="extra-review" class="extra-btn review">🔁 再練一次</button><button id="extra-preview" class="extra-btn preview" ${unseenCount()===0?'disabled':''}>🚀 預習明天</button></div>`:''}<div class="actions" style="justify-content:center"><button class="button secondary" data-view="${isToday?'home':'calendar'}">${isToday?'回首頁':'回月曆'}</button></div></section>`;
+ if(isToday){ROOT.querySelector('#extra-review').onclick=()=>startExtra('review');ROOT.querySelector('#extra-preview').onclick=()=>startExtra('preview');}
+ ROOT.querySelector('[data-view]').onclick=e=>showView(e.currentTarget.dataset.view);updateSyncTag();
 }
-async function queueFinishCloud(d){if(!cloudUser||!d.finished)return;try{const {data,error}=await supabase.rpc('finish_day');if(error)throw error;if(data===true){d.cloudConfirmedAt=new Date().toISOString();persist();if(view==='finished')showFinished(d);}}catch(e){console.warn('Finish sync',e);notify('完成紀錄尚未雲端驗證，請檢查網路並於當天重新開啟。');}}
-async function syncDailyCloud(d){if(!cloudUser||!d)return;try{await beginCloudDay(d);for(const wordId of d.passed){if(!d.cloudSyncedPasses?.includes(wordId)){const {error}=await supabase.rpc('submit_pass',{p_word_id:wordId});if(error)throw error;if(!d.cloudSyncedPasses)d.cloudSyncedPasses=[];d.cloudSyncedPasses.push(wordId);}}if(d.finished)await queueFinishCloud(d);persist();}catch(e){console.warn('syncDailyCloud',e);}}
 function renderCalendar(){if(!calendarCursor)calendarCursor=today().slice(0,7);const [year,month]=calendarCursor.split('-').map(Number);const first=new Date(Date.UTC(year,month-1,1));const offset=(first.getUTCDay()+6)%7;const n=new Date(Date.UTC(year,month,0)).getUTCDate();const stamps=[];for(let i=0;i<offset;i++)stamps.push('');for(let day=1;day<=n;day++)stamps.push(`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
- ROOT.innerHTML=`${hero()}<section class="panel"><div class="section-head"><div><h2>學習月曆</h2><p>只有「完成全部當日配額」才會標示完成。</p></div></div><div class="calendar-bar"><button id="prev-month" class="button secondary">‹ 上個月</button><span class="cal-title">${year} 年 ${month} 月</span><button id="next-month" class="button secondary">下個月 ›</button></div><div class="calendar-grid">${['一','二','三','四','五','六','日'].map(x=>`<div class="weekday">週${x}</div>`).join('')}${stamps.map(date=>{if(!date)return '<div class="cal-day blank"></div>';const d=S.days[date];const exam=date===EXAM||date==='2027-05-16';const cls=`cal-day ${date===today()?'today':''} ${d?.finished?'done':d&&date<today()?'missed':''} ${exam?'exam':''}`;const info=exam?'會考':d?.finished?`✓ ${d.passed.length} 字`:d?`${d.passed.length}/${d.goal}`:'';return `<div class="${cls}" title="${esc(date)} ${esc(info)}"><div class="num">${+date.slice(8)}</div><div class="cal-note">${esc(info)}</div></div>`;}).join('')}</div><div class="legend"><span>🟩 完成當日配額</span><span>🟧 開始但尚未完成</span><span>🟨 會考日</span></div></section>`;
- ROOT.querySelector('#prev-month').onclick=()=>changeMonth(-1);ROOT.querySelector('#next-month').onclick=()=>changeMonth(1);}
+ ROOT.innerHTML=`${hero()}<section class="panel"><div class="section-head"><div><h2>學習月曆</h2><p>點完成的日期，可查看那天的截圖卡。</p></div></div><div class="calendar-bar"><button id="prev-month" class="button secondary">‹ 上個月</button><span class="cal-title">${year} 年 ${month} 月</span><button id="next-month" class="button secondary">下個月 ›</button></div><div class="calendar-grid">${['一','二','三','四','五','六','日'].map(x=>`<div class="weekday">週${x}</div>`).join('')}${stamps.map(date=>{if(!date)return '<div class="cal-day blank"></div>';const d=S.days[date];const exam=date===EXAM||date==='2027-05-16';const cls=`cal-day ${date===today()?'today':''} ${d?.finished?'done':d&&date<today()?'missed':''} ${exam?'exam':''}`;const info=exam?'會考':d?.finished?`✓ ${d.passed.length} 字`:d?`${d.passed.length}/${d.goal}`:'';return d?.finished?`<button type="button" data-receipt="${date}" class="${cls}" title="點擊查看 ${esc(date)} 的完成卡"><div class="num">${+date.slice(8)}</div><div class="cal-note">${esc(info)}</div></button>`:`<div class="${cls}" title="${esc(date)} ${esc(info)}"><div class="num">${+date.slice(8)}</div><div class="cal-note">${esc(info)}</div></div>`;}).join('')}</div><div class="legend"><span>🟩 完成當日配額</span><span>🟧 開始但尚未完成</span><span>🟨 會考日</span></div></section>`;
+ ROOT.querySelector('#prev-month').onclick=()=>changeMonth(-1);ROOT.querySelector('#next-month').onclick=()=>changeMonth(1);ROOT.querySelectorAll('[data-receipt]').forEach(b=>b.onclick=()=>showFinished(S.days[b.dataset.receipt],b.dataset.receipt));}
 function changeMonth(delta){const [y,m]=calendarCursor.split('-').map(Number);const d=new Date(Date.UTC(y,m-1+delta,1));calendarCursor=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;renderCalendar();}
 function renderLibrary(){const query=libraryQuery.trim().toLocaleLowerCase();
  const subset=WORDS.filter(w=>(libraryLevel==='all'||w.level===libraryLevel)&& (libraryTopic==='all'||groupOf(w)===libraryTopic) &&(!query||[w.word,w.chinese,w.official_label,...w.aliases].some(s=>String(s).toLocaleLowerCase().includes(query))));
  // 字庫可按學習主題瀏覽；不是按字母順序排每日任務。
  const pages=Math.max(1,Math.ceil(subset.length/24));libraryPage=Math.min(libraryPage,pages-1);const page=subset.slice(libraryPage*24,libraryPage*24+24);
- ROOT.innerHTML=`<section class="hero"><div><div class="eyebrow">THEMES</div><h1>主題字庫 📚</h1></div><div class="hero-date"><small>全部詞目</small><b>${WORDS.length}</b></div></section><section class="panel"><div class="searchbox"><input id="search-vocab" value="${esc(libraryQuery)}" placeholder="🔍 搜尋單字／中文" aria-label="搜尋字庫"><select id="topic-vocab" aria-label="主題分類"><option value="all">全部主題</option>${TOPICS.map(topic=>`<option value="${esc(topic)}" ${libraryTopic===topic?'selected':''}>${esc(topic)}</option>`).join('')}</select><select id="level-vocab"><option value="all">全部字級</option><option value="basic" ${libraryLevel==='basic'?'selected':''}>基本詞目</option><option value="extended" ${libraryLevel==='extended'?'selected':''}>延伸詞目</option></select></div><p class="muted small">共 ${subset.length} 個詞目</p><div class="vocab-list">${page.map(w=>`<div class="vocab-item"><b>${esc(w.word)}</b><span class="small">${esc(w.chinese)}</span><p class="library-example">${esc(sentenceFor(w))}</p></div>`).join('')}</div><div class="page-nav"><button class="button secondary" id="library-prev" ${libraryPage===0?'disabled':''}>上一頁</button><span class="small muted">${libraryPage+1} / ${pages}</span><button class="button secondary" id="library-next" ${libraryPage>=pages-1?'disabled':''}>下一頁</button></div></section>`;
+ ROOT.innerHTML=`<section class="hero"><div><div class="eyebrow">THEMES</div><h1>主題字庫 📚</h1></div><div class="hero-date"><small>全部詞目</small><b>${WORDS.length}</b></div></section><section class="panel"><div class="searchbox"><input id="search-vocab" value="${esc(libraryQuery)}" placeholder="🔍 搜尋單字／中文" aria-label="搜尋字庫"><select id="topic-vocab" aria-label="主題分類"><option value="all">全部主題</option>${TOPICS.map(topic=>`<option value="${esc(topic)}" ${libraryTopic===topic?'selected':''}>${esc(topic)}</option>`).join('')}</select><select id="level-vocab"><option value="all">全部字級</option><option value="basic" ${libraryLevel==='basic'?'selected':''}>基本詞目</option><option value="extended" ${libraryLevel==='extended'?'selected':''}>延伸詞目</option></select></div><p class="muted small">共 ${subset.length} 個詞目</p><div class="vocab-list">${page.map(w=>`<div class="vocab-item"><div class="vocab-line"><b>${esc(w.word)}</b><button type="button" class="listen-btn tiny" data-listen-word="${esc(w.id)}" aria-label="朗讀 ${esc(w.word)}">🔊</button></div><span class="small">${esc(w.chinese)}</span><div class="vocab-line"><p class="library-example">${esc(sentenceFor(w))}</p><button type="button" class="listen-btn tiny" data-listen-example="${esc(w.id)}" aria-label="朗讀例句">🔊</button></div></div>`).join('')}</div><div class="page-nav"><button class="button secondary" id="library-prev" ${libraryPage===0?'disabled':''}>上一頁</button><span class="small muted">${libraryPage+1} / ${pages}</span><button class="button secondary" id="library-next" ${libraryPage>=pages-1?'disabled':''}>下一頁</button></div></section>`;
  const input=ROOT.querySelector('#search-vocab');let timer;input.oninput=e=>{libraryQuery=e.target.value;libraryPage=0;clearTimeout(timer);timer=setTimeout(()=>{renderLibrary();document.querySelector('#search-vocab')?.focus();},230);};
  ROOT.querySelector('#topic-vocab').onchange=e=>{libraryTopic=e.target.value;libraryPage=0;renderLibrary();};
  ROOT.querySelector('#level-vocab').onchange=e=>{libraryLevel=e.target.value;libraryPage=0;renderLibrary();};
- ROOT.querySelector('#library-prev').onclick=()=>{libraryPage--;renderLibrary();};ROOT.querySelector('#library-next').onclick=()=>{libraryPage++;renderLibrary();};
+ ROOT.querySelector('#library-prev').onclick=()=>{libraryPage--;renderLibrary();};ROOT.querySelector('#library-next').onclick=()=>{libraryPage++;renderLibrary();};ROOT.querySelectorAll('[data-listen-word]').forEach(b=>b.onclick=()=>speak(WORDS_BY_ID.get(b.dataset.listenWord).word));ROOT.querySelectorAll('[data-listen-example]').forEach(b=>b.onclick=()=>speak(sentenceFor(WORDS_BY_ID.get(b.dataset.listenExample))));
 }
-function accountContent(){const isConfigured=!!supabase;return `${hero()}<section class="panel"><h2>我的設定</h2><div class="form-field"><label for="nickname">顯示名稱</label><input id="nickname" maxlength="40" value="${esc(S.settings.nickname)}" placeholder="例如：7號 / 小安"></div><div class="actions"><button id="save-nickname" class="button secondary">儲存</button><button id="export-backup" class="button outline">匯出備份</button><label class="button outline import-label" for="import-backup">匯入備份<input id="import-backup" type="file" accept=".json,application/json" hidden></label></div><p class="help">每日學習量請回到「今日任務」調整。</p></section><section class="panel"><h2>帳號同步</h2>${!isConfigured?`<p class="notice compact">目前是本機試用版。若要跨裝置同步、學生登入、導師查核，需先完成 Supabase 設定。</p>`:cloudUser?`<p>目前帳號：<b>${esc(cloudUser.email||'已登入使用者')}</b></p><div class="actions"><button class="button outline" id="sync-now">立即同步</button><button class="button orange" id="sign-out">登出</button></div>`:`<div class="form-row"><div class="form-field"><label for="email">電子郵件</label><input id="email" type="email" autocomplete="email"></div><div class="form-field"><label for="password">密碼</label><input id="password" type="password" minlength="8" autocomplete="current-password"></div></div><div class="actions"><button class="button" id="sign-in">登入</button><button class="button secondary" id="sign-up">註冊</button></div><p class="help">首次註冊可能要先到信箱驗證。</p>`}</section>${cloudUser&&!isTeacher?`<section class="panel"><h2>加入班級</h2><div class="form-row"><div class="form-field"><label for="join-code">班級碼</label><input id="join-code" maxlength="25" placeholder="例如：ABCD-2027"></div><div class="form-field"><label for="seat-num">座號</label><input id="seat-num" type="number" min="1" max="60" placeholder="1–60"></div></div><button id="join-class" class="button">送出申請</button><div id="class-list" class="small muted" style="margin-top:12px"></div></section>`:''}`;}
-function renderAccount(){ROOT.innerHTML=accountContent();ROOT.querySelector('#save-nickname').onclick=async()=>{const nick=ROOT.querySelector('#nickname').value.trim();if(!nick){notify('請先填寫顯示名稱。');return;}S.settings.nickname=nick;persist();await syncProfile();notify('名稱已儲存。');};ROOT.querySelector('#export-backup').onclick=()=>downloadBlob(JSON.stringify({version:3,exportedAt:new Date().toISOString(),data:S},null,2),'我的單字日課備份.json','application/json');
- ROOT.querySelector('#import-backup').onchange=async e=>{
-   const file=e.target.files?.[0];if(!file)return;
-   if(file.size>4*1024*1024){notify('備份檔案過大，請選擇單字日課匯出的 JSON。');return;}
-   try{
-     const pack=JSON.parse(await file.text());const d=pack?.data;
-     if(pack.version!==3||!d||!d.settings||!d.progress||!d.days||!GOALS.includes(d.settings.goal)||Array.isArray(d.progress)||Array.isArray(d.days)||typeof d.progress!=='object'||typeof d.days!=='object')throw new Error('格式不正確');
-     if(Object.keys(d.progress).some(id=>!WORDS_BY_ID.has(id)))throw new Error('檔案包含本字庫沒有的詞目');
-     if(!confirm('匯入會覆蓋此帳號／瀏覽器現有的本機學習紀錄。確定繼續嗎？'))return;
-     S={...emptyState(),...d};persist();notify('備份已匯入，請確認今日進度。');showView('home');
-   }catch(err){notify('無法匯入：'+err.message);}
- };
- if(!supabase)return;if(cloudUser){ROOT.querySelector('#sign-out').onclick=signOut;ROOT.querySelector('#sync-now').onclick=async()=>{queueProgressSync();await syncChain;await syncDailyCloud(sessionToday());notify('已提出同步請求；請確認顯示「雲端已登記」後，導師才可查核。');};if(!isTeacher){ROOT.querySelector('#join-class').onclick=joinClass;loadJoinedClasses();}}
- else{ROOT.querySelector('#sign-in').onclick=()=>authForm('login');ROOT.querySelector('#sign-up').onclick=()=>authForm('signup');}}
+function accountContent(){const configured=!!supabase,rate=S.settings.voiceRate||0.86;return `${hero()}<section class="panel account-panel"><h2>☁ 保護學習進度</h2>${!configured?`<p class="notice compact">目前為本機試用。需要部署者完成雲端設定後，才能用帳號備份並在換手機後復原。</p>`:cloudUser?`<p class="muted small">已登入：${esc(cloudUser.email||'')}</p><div class="backup-status"><span id="sync-indicator">${syncStatus==='synced'?'☁ 已備份':syncStatus==='error'?'⚠ 備份失敗':'待備份'}</span></div><div class="actions"><button class="button" id="sync-now">立即備份</button><button class="button outline" id="sign-out">登出</button></div>`:`<div class="form-row"><div class="form-field"><label for="email">電子郵件</label><input id="email" type="email" autocomplete="email"></div><div class="form-field"><label for="password">密碼</label><input id="password" type="password" minlength="8" autocomplete="current-password"></div></div><div class="actions"><button class="button" id="sign-in">登入</button><button class="button secondary" id="sign-up">註冊</button></div><p class="help">註冊後可能需要先至信箱驗證。</p>`}</section><section class="panel"><h2>📲 放到手機主畫面</h2><div class="install-guide" id="install-guide"><p>iPhone：Safari 分享 → 加入主畫面</p><p>Android：Chrome 選單 → 安裝或建立捷徑</p></div><button class="button secondary" id="install-now">加入主畫面</button></section><section class="panel"><h2>🔊 朗讀速度</h2><div class="voice-picker"><button data-voice="0.72" class="voice-choice ${rate<=0.78?'selected':''}">慢速</button><button data-voice="0.86" class="voice-choice ${rate>0.78&&rate<0.97?'selected':''}">標準</button><button data-voice="1" class="voice-choice ${rate>=0.97?'selected':''}">一般</button><button id="voice-demo" class="listen-btn" type="button">🔊 試聽</button></div></section><section class="panel"><h2>👤 我的資料</h2><div class="form-field"><label for="nickname">顯示名稱</label><input id="nickname" maxlength="40" value="${esc(S.settings.nickname)}" placeholder="例如：7號 小安"></div><button id="save-nickname" class="button secondary">儲存</button><div class="divider"></div><div class="actions"><button id="export-backup" class="button outline">匯出備份檔</button><label class="button outline import-label" for="import-backup">匯入備份<input id="import-backup" type="file" accept=".json,application/json" hidden></label></div></section>`;}
+function renderAccount(){ROOT.innerHTML=accountContent();ROOT.querySelector('#save-nickname').onclick=async()=>{const nick=ROOT.querySelector('#nickname').value.trim();if(!nick){notify('請填寫顯示名稱');return;}S.settings.nickname=nick;persist();await syncProfile();notify('已儲存');};
+ ROOT.querySelector('#export-backup').onclick=()=>downloadBlob(JSON.stringify({version:3,exportedAt:new Date().toISOString(),data:S},null,2),'單字日課_個人學習備份.json','application/json');
+ ROOT.querySelector('#import-backup').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;if(file.size>4*1024*1024){notify('檔案過大');return;}
+ try{const pack=JSON.parse(await file.text()),d=pack?.data;if(pack.version!==3||!d||!d.settings||!d.progress||!d.days||!GOALS.includes(d.settings.goal)||Array.isArray(d.progress)||Array.isArray(d.days)||typeof d.progress!=='object'||typeof d.days!=='object')throw new Error('檔案格式不正確');if(Object.keys(d.progress).some(id=>!WORDS_BY_ID.has(id)))throw new Error('包含陌生的字庫項目');
+ if(!confirm('將備份合併進目前的學習進度？'))return;S=mergeStates(S,d);persist();notify('備份已合併');showView('home');}catch(err){notify('匯入失敗：'+err.message);}};
+ ROOT.querySelectorAll('[data-voice]').forEach(b=>b.onclick=()=>{S.settings.voiceRate=Number(b.dataset.voice);persist();renderAccount();});
+ ROOT.querySelector('#voice-demo').onclick=()=>speak('I study English every day.');
+ ROOT.querySelector('#install-now').onclick=installApp;const guide=ROOT.querySelector('#install-guide');if(isStandalone())guide.innerHTML='<p>✓ 已經從主畫面開啟</p>';
+ if(!supabase)return;if(cloudUser){ROOT.querySelector('#sign-out').onclick=signOut;ROOT.querySelector('#sync-now').onclick=async()=>{if(!cloudReady){await handleLogin(cloudUser);notify(cloudReady?'已重新連上雲端':'雲端仍無法連線，請檢查網路');return;}pendingSync=true;syncStatus='pending';updateSyncTag();const ok=await flushCloudBackup();notify(ok?'雲端備份完成':'備份尚未成功，請檢查網路或資料庫設定');};}
+ else{ROOT.querySelector('#sign-in').onclick=()=>authForm('login');ROOT.querySelector('#sign-up').onclick=()=>authForm('signup');}
+}
 async function authForm(mode){const email=ROOT.querySelector('#email').value.trim(),password=ROOT.querySelector('#password').value;if(!email.includes('@')||password.length<8){notify('請填寫有效信箱與至少 8 碼密碼。');return;}try{const response=mode==='signup'?await supabase.auth.signUp({email,password}):await supabase.auth.signInWithPassword({email,password});if(response.error)throw response.error;if(mode==='signup'&&!response.data.session)notify('帳號已送出，請先至信箱完成驗證，再回來登入。');else{notify('登入成功。');await handleLogin(response.data.user);}}catch(e){notify('帳號操作失敗：'+e.message);}}
-async function handleLogin(user){if(!user)return;cloudUser=user;localKey='vocab-daily-v3:'+user.id;const cached=loadLocal(localKey);S=cached;try{const res=await supabase.from('student_progress').select('payload,updated_at').eq('user_id',user.id).maybeSingle();if(res.error)throw res.error;const remote=res.data?.payload;if(remote&&remote.progress&&remote.days){if(!S.updatedAt||(remote.updatedAt&&remote.updatedAt>S.updatedAt)){S={...emptyState(),...remote};localStorage.setItem(localKey,JSON.stringify(S));}}await syncProfile();const t=await supabase.from('teachers').select('user_id').eq('user_id',user.id).maybeSingle();isTeacher=!!t.data;}catch(e){console.warn('cloud load failed',e.message);notify('已進入帳號，部分雲端資料暫無法讀取。');}
- document.getElementById('connect-tag').textContent=isTeacher?'導師帳號':'雲端帳號';document.getElementById('teacher-nav').hidden=!isTeacher;await syncDailyCloud(sessionToday());showView('home');}
-async function signOut(){try{await supabase.auth.signOut();}catch(e){console.warn(e);}cloudUser=null;isTeacher=false;localKey='vocab-daily-v3:guest';S=loadLocal(localKey);document.getElementById('teacher-nav').hidden=true;document.getElementById('connect-tag').textContent='本機試用';notify('已登出；本機試用與帳號資料分開保存。');showView('account');}
-async function loadJoinedClasses(){try{const r=await supabase.from('enrollments').select('seat_no,approved,classrooms(name)').eq('student_id',cloudUser.id);if(r.error)throw r.error;ROOT.querySelector('#class-list').innerHTML=r.data.length?r.data.map(x=>`<p>${esc(x.classrooms?.name||'班級')} ｜ ${x.seat_no} 號 ｜ ${x.approved?'✅ 已核准':'⏳ 待導師核准'}</p>`).join(''):'尚未加入班級';}catch(e){console.warn(e);}}
-async function joinClass(){const code=ROOT.querySelector('#join-code').value.trim().toUpperCase(),seat=+ROOT.querySelector('#seat-num').value;if(!code||!Number.isInteger(seat)||seat<1||seat>60){notify('請填寫班級碼和 1–60 的座號。');return;}try{await syncProfile();const {error}=await supabase.rpc('join_class',{p_code:code,p_seat_no:seat});if(error)throw error;notify('已送出班級加入申請，請導師核准。');loadJoinedClasses();}catch(e){notify('無法加入班級：'+e.message);}}
+async function handleLogin(user){if(!user)return;cloudUser=user;cloudReady=false;syncStatus='pending';localStorage.setItem('vocab-last-account',user.id);localKey='vocab-daily-v3:'+user.id;
+ let local=loadLocal(localKey),remote=null,loaded=false;
+ try{const result=await supabase.from('student_progress').select('payload').eq('user_id',user.id).maybeSingle();if(result.error)throw result.error;remote=result.data?.payload;loaded=true;}
+ catch(e){console.warn('無法讀取雲端進度',e);notify('目前只能讀取這台裝置的紀錄；請稍後再試。');}
+ S=mergeStates(local,remote);
+ // 首次登入時，允許學生自行選擇是否合併同一台裝置的訪客紀錄。
+ const guest=loadLocal('vocab-daily-v3:guest');
+ if(loaded&&(Object.keys(guest.progress).length||Object.keys(guest.days).length)&&!localStorage.getItem('vocab-guest-migration:'+user.id)){
+  const yes=confirm('這台裝置有未登入的學習紀錄，要合併到這個帳號嗎？（若是共用裝置，請選取消）');
+  if(yes)S=mergeStates(S,guest);
+  localStorage.setItem('vocab-guest-migration:'+user.id,'asked');
+ }
+ localStorage.setItem(localKey,JSON.stringify(S));cloudReady=loaded;pendingSync=loaded;syncStatus=loaded?'pending':'error';updateSyncTag();
+ if(loaded){await syncProfile();await flushCloudBackup();}
+ showView('home');
+}
+async function signOut(){if(cloudUser&&cloudReady&&pendingSync)await flushCloudBackup();try{await supabase.auth.signOut();}catch(e){console.warn(e);}
+ cloudUser=null;cloudReady=false;localStorage.removeItem('vocab-last-account');localKey='vocab-daily-v3:guest';S=loadLocal(localKey);syncStatus='local';updateSyncTag();notify('已登出');showView('account');}
 function downloadBlob(contents,name,mime){const blob=new Blob([contents],{type:mime});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function renderTeacher(){if(!cloudUser||!isTeacher){showView('home');return;}ROOT.innerHTML=`<section class="hero"><div><div class="eyebrow">CLASSROOM CHECK-IN</div><h1>導師每日查核</h1><p>快速查看昨天有哪些同學完成每日練習配額。</p></div><div class="hero-date"><small>查核日期</small><b style="font-size:18px">${formatDay(yesterday())}</b><small>台灣時間</small></div></section><section class="panel"><h2>我的班級</h2><div class="form-row"><div class="form-field"><label>班級名稱</label><input id="class-name" maxlength="60" placeholder="例如：八年七班"></div><div class="form-field"><label>邀請碼（英數至少 6 碼）</label><input id="class-code" maxlength="25" placeholder="例如：MINGDE713"></div></div><div class="actions"><button id="create-class" class="button secondary">建立班級</button></div><div class="divider"></div><div class="form-field"><label>選擇班級</label><select id="teacher-select"><option value="">載入中…</option></select></div></section><section class="panel" id="teacher-roster"><div class="loading">正在載入學生紀錄…</div></section>`;
  ROOT.querySelector('#create-class').onclick=createClass;await loadTeacherClasses();}
@@ -236,11 +309,24 @@ async function loadTeacherRoster(){const el=ROOT.querySelector('#teacher-roster'
  }catch(e){el.textContent='查核失敗：'+e.message;}}
 async function approveStudent(id){if(!confirm('已確認這是正確的學生座號與身分，核准加入班級？'))return;try{const {error}=await supabase.from('enrollments').update({approved:true}).eq('class_id',currentClass).eq('student_id',id);if(error)throw error;notify('學生已核准。');await loadTeacherRoster();}catch(e){notify('核准失敗：'+e.message);}}
 async function removeStudentApplication(id){if(!confirm('確定移除這筆待核准申請？學生可用正確的座號重新加入。'))return;try{const {error}=await supabase.from('enrollments').delete().eq('class_id',currentClass).eq('student_id',id).eq('approved',false);if(error)throw error;notify('待核准申請已移除。');await loadTeacherRoster();}catch(e){notify('移除失敗：'+e.message);}}
-function bindGlobalUI(){document.querySelectorAll('.nav-btn,#account-shortcut').forEach(b=>{if(!b.dataset.bound){b.addEventListener('click',()=>showView(b.dataset.view));b.dataset.bound='1';}});const toggle=document.getElementById('mobile-menu-toggle');if(toggle&&!toggle.dataset.bound){toggle.addEventListener('click',toggleMobileMenu);toggle.dataset.bound='1';}window.addEventListener('resize',()=>{if(!mobileMode())closeMobileMenu();},{passive:true});document.addEventListener('keydown',e=>{if(e.key==='Escape')closeMobileMenu();});}
-function showView(name){clearTimeout(advanceTimer);advanceTimer=null;view=name;document.querySelectorAll('.nav-btn').forEach(btn=>btn.classList.toggle('active',btn.dataset.view===name));closeMobileMenu();if(name==='home')renderHome();else if(name==='calendar')renderCalendar();else if(name==='library')renderLibrary();else if(name==='account')renderAccount();else if(name==='teacher')renderTeacher();}
-async function init(){bindGlobalUI();try{WORDS=await loadWordsData();if(WORDS.length!==2005||new Set(WORDS.map(x=>x.id)).size!==2005)throw new Error('官方字庫數量或ID不一致');WORDS_BY_ID=new Map(WORDS.map(w=>[w.id,w]));S=loadLocal(localKey);
- const c=window.VOCAB_CLOUD_CONFIG||{};if(c.url&&c.anonKey&&window.supabase?.createClient){supabase=window.supabase.createClient(c.url,c.anonKey);const {data:{session}}=await supabase.auth.getSession();if(session?.user)await handleLogin(session.user);}const params=new URLSearchParams(location.search);showView(params.get('view')==='calendar'?'calendar':'home');if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
+function isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;}
+function isIOS(){return /iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}
+async function installApp(){if(isStandalone()){notify('已經放到主畫面囉');return;}
+ if(installPrompt){const prompt=installPrompt;installPrompt=null;try{await prompt.prompt();await prompt.userChoice;}catch(e){console.warn('install prompt:',e);}return;}
+ notify(isIOS()?'請用 Safari 分享選單 → 加入主畫面':'請在 Chrome 的選單中選「安裝或建立捷徑」，再選「安裝」');
+}
+function bindGlobalUI(){document.querySelectorAll('.nav-btn,#account-shortcut').forEach(b=>{if(!b.dataset.bound){b.addEventListener('click',()=>showView(b.dataset.view));b.dataset.bound='1';}});
+ const install=document.getElementById('install-shortcut');if(install)install.addEventListener('click',installApp);
+ window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;});
+ window.addEventListener('online',()=>{if(cloudUser&&!cloudReady)handleLogin(cloudUser).catch(e=>console.warn(e));else if(cloudUser&&cloudReady&&pendingSync)queueProgressSync();else if(!cloudUser&&localKey!=='vocab-daily-v3:guest')notify('網路已恢復，重新開啟 App 並登入即可同步學習紀錄。');});
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&cloudUser&&cloudReady&&pendingSync)queueProgressSync();});
+ const toggle=document.getElementById('mobile-menu-toggle');if(toggle&&!toggle.dataset.bound){toggle.addEventListener('click',toggleMobileMenu);toggle.dataset.bound='1';}
+ window.addEventListener('resize',()=>{if(!mobileMode())closeMobileMenu();},{passive:true});document.addEventListener('keydown',e=>{if(e.key==='Escape')closeMobileMenu();});
+}
+function showView(name){clearTimeout(advanceTimer);advanceTimer=null;view=name;document.querySelectorAll('.nav-btn').forEach(btn=>btn.classList.toggle('active',btn.dataset.view===name));closeMobileMenu();if(name==='home')renderHome();else if(name==='calendar')renderCalendar();else if(name==='library')renderLibrary();else if(name==='account')renderAccount();}
+async function init(){bindGlobalUI();try{WORDS=await loadWordsData();if(WORDS.length!==2005||new Set(WORDS.map(x=>x.id)).size!==2005)throw new Error('官方字庫數量或ID不一致');WORDS_BY_ID=new Map(WORDS.map(w=>[w.id,w]));const offlineAccount=localStorage.getItem('vocab-last-account');if(offlineAccount){localKey='vocab-daily-v3:'+offlineAccount;}S=loadLocal(localKey);
+ const c=window.VOCAB_CLOUD_CONFIG||{};if(c.url&&c.anonKey&&window.supabase?.createClient){supabase=window.supabase.createClient(c.url,c.anonKey);try{const {data:{session}}=await supabase.auth.getSession();if(session?.user)await handleLogin(session.user);}catch(e){console.warn('初始登入失敗',e);}}updateSyncTag();const params=new URLSearchParams(location.search);showView(params.get('view')==='calendar'?'calendar':'home');if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
  }catch(e){ROOT.innerHTML=`<section class="panel"><h2>字庫載入失敗</h2><p>${esc(e.message)}</p><p>請確認 <code>index.html</code>、<code>app.js</code>、<code>styles.css</code>、<code>word-data-full.json</code> 與 <code>word-data-full.js</code> 都在同一個資料夾。</p><p>若放到網站伺服器（例如 GitHub Pages）可讀取 JSON；若是直接雙擊本機 HTML，系統會改用內建字庫。</p></section>`;console.error(e);}}
-window.__VOCAB_TEST__={today,dateTaipei,addDays,diffDays,getWords:()=>WORDS,getState:()=>S,makePlan:startPlan,lightMetrics,groupOf,go:showView,login:handleLogin};
+window.__VOCAB_TEST__={today,dateTaipei,addDays,diffDays,getWords:()=>WORDS,getState:()=>S,makePlan:startPlan,lightMetrics,groupOf,go:showView,login:handleLogin,mergeStates,installApp};
 init();
 })();
