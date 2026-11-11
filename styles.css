@@ -341,3 +341,69 @@ main{min-width:0}
 .sync-small{font-size:12px;color:#71849a;margin-bottom:10px}
 .success-panel{padding:18px 16px 22px!important}
 @media(max-width:520px){.install-link{font-size:12px;padding:6px 9px}.top-actions{gap:6px}.top-actions .text-button{display:none}.receipt-card{padding:16px}.receipt-card h1{font-size:28px}.receipt-number{font-size:38px}.quiz-bottom .button{width:auto}}
+
+/* v3.7 首頁：將會考倒數和每日任務融合成同一張漸層卡 */
+.home-task-merged{
+  display:block;
+  padding:22px 24px;
+  border:1px solid #e2e8fa;
+  background:linear-gradient(122deg,#e7f4ff 0%,#f3eeff 54%,#fff2e6 100%);
+}
+.task-hero-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:20px}
+.task-hero-head h1{font-size:clamp(23px,3vw,30px);margin:6px 0 2px}
+.task-hero-head p{font-size:13px;font-weight:750;color:#69819c}
+.task-hero-head .hero-date{background:rgba(255,255,255,.78);border:1px solid #fff;box-shadow:0 5px 12px #7896c214}
+.task-status{display:flex;justify-content:space-between;gap:12px;align-items:center;color:#4d7290;font-size:14px;font-weight:800}
+.task-status strong{font-size:18px}
+.task-progress{margin-bottom:14px}
+.task-progress .progress-meta{margin:5px 0 0}
+.task-progress .progress-track{background:#fff}
+.home-task-merged .big-action{margin-top:8px}
+.home-task-merged .extra-actions{margin-top:12px}
+.learning-goals{margin-bottom:14px}
+.goal-forecast{
+  margin-top:15px;padding:13px 15px;border-radius:16px;background:#f7f9fd;
+  border:1px solid #e9eef5;display:grid;grid-template-columns:1fr auto;gap:2px 9px;align-items:center;
+}
+.goal-forecast span{font-size:13px;font-weight:850;color:#667c91}
+.goal-forecast strong{font-size:19px;color:#446ca4;white-space:nowrap}
+.goal-forecast small{grid-column:1/-1;color:#7b8ca1;font-size:12px}
+.home-statistics .stat-card:before{width:5px}
+.home-statistics .stat-lavender{background:linear-gradient(145deg,#fcfbff,#f1edff);border-color:#e9e2fc}
+.home-statistics .stat-lavender:before{background:linear-gradient(#b5a1f4,#8e81e5)}
+.home-statistics .stat-rose{background:linear-gradient(145deg,#fffefe,#fff0f5);border-color:#f9e5ec}
+.home-statistics .stat-rose:before{background:linear-gradient(#ffb6c7,#e987aa)}
+.home-statistics .stat-sunshine{background:linear-gradient(145deg,#fffefc,#fff9de);border-color:#f5edd1}
+.home-statistics .stat-sunshine:before{background:linear-gradient(#f4d56f,#eebd4f)}
+.practice-panel{margin-top:3px}
+.practice-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+.practice-mode{min-height:105px;background:#fafcff;border:1px solid #e6ebf3;border-radius:18px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:3px;text-align:center;padding:11px 8px;color:#435b75;box-shadow:0 4px 10px #4c6a8710;touch-action:manipulation}
+.practice-mode:hover,.practice-mode:focus-visible{background:#ecf4ff;border-color:#8cb8ed;outline:2px solid #d6e8ff}
+.practice-mode span{font-size:23px}
+.practice-mode b{font-size:14px;white-space:nowrap}
+.practice-mode small{font-size:11px;color:#8190a3}
+.practice-grid .practice-mode:nth-child(1){background:#f2f1ff}
+.practice-grid .practice-mode:nth-child(2){background:#eaf6ff}
+.practice-grid .practice-mode:nth-child(3){background:#fff5eb}
+.practice-grid .practice-mode:nth-child(4){background:#eefaf3}
+.context-example .sound-actions{display:flex;flex-direction:column;align-items:stretch;gap:7px;flex:0 0 auto;margin-left:auto}
+.context-example .sound-actions .listen-btn{margin-left:0;min-width:104px}
+.example-row{align-items:flex-start}
+.quiz-card .option{font-size:clamp(14px,1.6vw,17px);line-height:1.4}
+@media(max-width:960px){.practice-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:650px){
+ .home-task-merged{padding:18px 15px}
+ .task-hero-head{margin-bottom:15px}
+ .task-hero-head h1{font-size:23px}
+ .task-hero-head .hero-date{padding:10px 9px;min-width:105px;text-align:center}
+ .task-hero-head .hero-date b{font-size:23px}
+ .practice-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+ .practice-mode{min-height:88px}
+ .goal-forecast{padding:12px}
+}
+@media(max-width:370px){
+ .task-hero-head h1{font-size:21px}
+ .task-hero-head .hero-date{min-width:95px}
+ .practice-mode b{font-size:13px}
+ .practice-mode small{font-size:10px}
+}
