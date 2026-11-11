@@ -407,3 +407,45 @@ main{min-width:0}
  .practice-mode b{font-size:13px}
  .practice-mode small{font-size:10px}
 }
+
+/* v3.8：首頁倒數與兩項單字進度並排；自主練習搬到側邊欄 */
+.nav-group-title{font-size:12px;font-weight:850;color:#97a3b5;letter-spacing:1px;padding:14px 15px 3px;border-top:1px solid #eef1f7;margin-top:8px}
+.nav-practice{background:#f7f8fc;border:1px solid transparent}
+.nav-c2e:hover,.nav-c2e.active{background:#f2edff;border-color:#e6ddff;color:#6b58a5}
+.nav-cloze:hover,.nav-cloze.active{background:#fff1f8;border-color:#f6dbe8;color:#ac5b80}
+.task-hero-head{display:grid;grid-template-columns:minmax(0,1fr) repeat(3,minmax(100px,128px));align-items:stretch;gap:10px}
+.task-hero-head>div:first-child{align-self:center;min-width:0}
+.task-hero-head .hero-date{min-width:0;padding:11px 8px;text-align:center;display:flex;flex-direction:column;justify-content:center}
+.home-quickstat{display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:20px;padding:10px 8px;min-width:0;gap:1px;box-shadow:0 5px 12px #7896c214}
+.home-quickstat span{font-size:12px;font-weight:800;color:#667d91;white-space:nowrap}
+.home-quickstat strong{font-size:27px;font-weight:900;line-height:1.2;color:#3e5671}
+.home-quickstat small{font-size:11px;color:#76869c}
+.quickstat-learned{background:#f1edff;border:1px solid #e3daf9}
+.quickstat-mastered{background:#fff0f5;border:1px solid #f7dfeb}
+@media(max-width:960px){
+ .side-nav{grid-template-columns:repeat(5,minmax(0,1fr));}
+ .side-nav .nav-account,.side-nav .nav-group-title{display:none}
+ .side-nav .nav-btn{font-size:11px;min-width:0;gap:2px}
+ .top-actions .text-button{display:inline-flex;white-space:nowrap;text-decoration:none;background:#fff;border:1px solid #dce8f4;border-radius:999px;padding:7px 10px;color:#567b9b}
+}
+@media(max-width:760px){
+ .task-hero-head{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+ .task-hero-head>div:first-child{grid-column:1/-1}
+ .task-hero-head .hero-date{min-width:0;align-self:stretch;min-height:82px;padding:8px 5px}
+ .task-hero-head .hero-date b{font-size:22px}
+ .home-quickstat{min-height:82px;padding:8px 5px;border-radius:16px}
+ .home-quickstat span{font-size:11px}
+ .home-quickstat strong{font-size:24px}
+ .home-quickstat small{font-size:10px}
+}
+@media(max-width:560px){
+ .task-hero-head h1{font-size:23px}
+ .task-hero-head .hero-date small{font-size:10px}
+ .top-actions .text-button{display:inline-flex;font-size:12px;padding:6px 8px}
+ .side-nav .nav-btn{padding:9px 2px;line-height:1.22}
+}
+@media(max-width:370px){
+ .home-quickstat strong{font-size:21px}
+ .task-hero-head .hero-date b{font-size:20px}
+ .top-actions .text-button{font-size:11px;padding:5px 6px}
+}

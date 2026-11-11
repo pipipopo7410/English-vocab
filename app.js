@@ -1,4 +1,4 @@
-/* 單字日課 v3.7 — 純前端學習引擎 + 可選 Supabase 雲端帳號 */
+/* 單字日課 v3.8 — 純前端學習引擎 + 可選 Supabase 雲端帳號 */
 (()=>{'use strict';
 const EXAM='2027-05-15', FINAL_STUDY='2027-05-14', GOALS=[15,30,50], GOAL_NAMES={15:'輕量組・浮動',30:'標準組',50:'考前衝刺組'};
 const ROOT=document.getElementById('view-root');
@@ -135,13 +135,10 @@ function renderHome(){
  const day=sessionToday(),g=dayGoal(day),passed=day?.passed?.length||0,projection=dateProjection(),finish=day?.finished,m=lightMetrics();
  const extra=S.extraSession?.day===today()&&!S.extraSession.finished?S.extraSession:null;
  const left=Math.max(0,diffDays(today(),EXAM));
- ROOT.innerHTML=`<section class="hero home-task-merged"><div class="task-hero-head"><div><div class="eyebrow">會考單字 · 每天一點</div><h1>☀️ 今日任務</h1><p>${goalLabel(day)} · ${g} 個</p></div><div class="hero-date"><small>距離會考</small><b>${left} 天</b><small>5 / 15–16</small></div></div><div class="task-progress"><div class="task-status"><span>${finish?'✓ 已完成':day?'進行中':'今天一起開始'}</span><strong>${passed} / ${g}</strong></div>${progressBar(passed,g)}</div><button id="start-study" class="button wide big-action">${finish?'查看完成紀錄':day?'繼續今日練習 →':'開始今日練習 →'}</button>${finish?`<div class="extra-actions"><button id="extra-review-home" class="extra-btn review">🔁 再練一次</button><button id="extra-preview-home" class="extra-btn preview" ${unseenCount()===0?'disabled':''}>🚀 繼續學新字</button></div>`:''}${extra?`<button id="extra-resume-home" class="button outline wide resume-extra" style="margin-top:10px">接著練 ${goalLabel(extra)} · ${extra.passed.length}/${extra.goal}</button>`:''}</section>`+
- `<section class="panel learning-goals"><div class="section-head"><div><h2>📆 每日學習量</h2><p>選一個適合自己的節奏</p></div></div>${goalButtons()}<div class="goal-forecast"><span>🏁 首輪預估</span><strong>${formatDay(projection.date)}</strong><small>剩下 ${projection.remaining} 個未首次答對${S.settings.goal===15?` · 每天約 ${m.dailyNew} 個新字`:''}</small></div></section>`+
- `<div class="cards home-statistics"><div class="stat-card stat-lavender"><div class="label">首次答對</div><strong>${WORDS.length-unseenCount()}</strong><small>／${WORDS.length}</small></div><div class="stat-card stat-rose"><div class="label">待複習</div><strong>${dueCount()}</strong></div><div class="stat-card stat-sunshine"><div class="label">已熟練</div><strong>${matureCount()}</strong></div></div>`+
- `<section class="panel practice-panel"><div class="section-head"><div><h2>🎯 自主練習</h2><p>選一種題型 · 每輪 10 個</p></div></div><div class="practice-grid"><button class="practice-mode" data-practice="mixed"><span>🧠</span><b>綜合練習</b><small>各種題型輪流</small></button><button class="practice-mode" data-practice="e2c"><span>🇬🇧</span><b>英翻中</b><small>選中文意思</small></button><button class="practice-mode" data-practice="c2e"><span>✍️</span><b>中翻英</b><small>選英文單字</small></button><button class="practice-mode" data-practice="cloze"><span>📖</span><b>克漏字</b><small>句子填空</small></button></div></section>`;
+ ROOT.innerHTML=`<section class="hero home-task-merged"><div class="task-hero-head"><div><div class="eyebrow">會考單字 · 每天一點</div><h1>☀️ 今日任務</h1><p>${goalLabel(day)} · ${g} 個</p></div><div class="hero-date"><small>距離會考</small><b>${left} 天</b><small>5 / 15–16</small></div><div class="home-quickstat quickstat-learned"><span>首次答對</span><strong>${WORDS.length-unseenCount()}</strong><small>／${WORDS.length}</small></div><div class="home-quickstat quickstat-mastered"><span>已精熟</span><strong>${matureCount()}</strong><small>跨日記住</small></div></div><div class="task-progress"><div class="task-status"><span>${finish?'✓ 已完成':day?'進行中':'今天一起開始'}</span><strong>${passed} / ${g}</strong></div>${progressBar(passed,g)}</div><button id="start-study" class="button wide big-action">${finish?'查看完成紀錄':day?'繼續今日練習 →':'開始今日練習 →'}</button>${finish?`<div class="extra-actions"><button id="extra-review-home" class="extra-btn review">🔁 再練一次</button><button id="extra-preview-home" class="extra-btn preview" ${unseenCount()===0?'disabled':''}>🚀 繼續學新字</button></div>`:''}${extra?`<button id="extra-resume-home" class="button outline wide resume-extra" style="margin-top:10px">接著練 ${goalLabel(extra)} · ${extra.passed.length}/${extra.goal}</button>`:''}</section>`+
+ `<section class="panel learning-goals"><div class="section-head"><div><h2>📆 每日學習量</h2><p>選一個適合自己的節奏</p></div></div>${goalButtons()}<div class="goal-forecast"><span>🏁 首輪預估</span><strong>${formatDay(projection.date)}</strong><small>剩下 ${projection.remaining} 個未首次答對${S.settings.goal===15?` · 每天約 ${m.dailyNew} 個新字`:''}</small></div></section>`;
  ROOT.querySelector('#start-study').addEventListener('click',()=>finish?showFinished(day):startStudy());
  ROOT.querySelectorAll('[data-goal]').forEach(b=>b.addEventListener('click',()=>setGoal(+b.dataset.goal)));
- ROOT.querySelectorAll('[data-practice]').forEach(b=>b.addEventListener('click',()=>startPractice(b.dataset.practice)));
  if(finish){ROOT.querySelector('#extra-review-home').onclick=()=>startExtra('review');ROOT.querySelector('#extra-preview-home').onclick=()=>startExtra('preview');}
  if(extra)ROOT.querySelector('#extra-resume-home').onclick=()=>renderQuiz(true);
 }
@@ -183,7 +180,7 @@ function startExtra(kind){const todayDay=sessionToday();if(!todayDay?.finished){
  if(!plan.length){notify(kind==='preview'?'所有新字都學過了，可以選擇再練一次。':'今天尚無可複習的單字。');return;}
  S.extraSession={kind,day:today(),goal:plan.length,plan:[...plan],queue:[...plan],passed:[],fails:{},startedAt:new Date().toISOString(),finished:false,finishedAt:null};persist();renderQuiz(true);
 }
-const PRACTICE_MODES=['mixed','e2c','c2e','cloze'];
+const PRACTICE_MODES=['c2e','cloze'];
 function startPractice(mode){
  if(!PRACTICE_MODES.includes(mode))return;
  const previous=S.extraSession;
@@ -199,7 +196,7 @@ function startPractice(mode){
 }
 function finishExtra(d){if(!d.finished){d.finished=true;d.finishedAt=new Date().toISOString();persist();}}
 function showExtraFinished(d){
- showView('extra-finished');
+ showView('extra-finished');if(d.kind==='practice')document.querySelectorAll('.nav-btn[data-practice]').forEach(b=>b.classList.toggle('active',b.dataset.practice===d.mode));
  const practice=d.kind==='practice',review=d.kind==='review';
  ROOT.innerHTML=`<section class="panel center success-panel"><div class="success-icon">${practice?'🎯':review?'🔁':'🚀'}</div><h1>${practice?'這輪練完了！':review?'複習完成！':'新字學完這一輪！'}</h1><p>這一輪練習了 <b>${d.passed.length}</b> 個詞目。</p><span class="pill good">${sessionToday()?.finished?'今日任務已完成':'加練不影響每日任務'}</span><div class="actions" style="justify-content:center"><button id="extra-again" class="button">${practice?'同題型再練一輪':review?'再練一次':'繼續學新字'}</button><button class="button secondary" data-view="home">回首頁</button></div></section>`;
  ROOT.querySelector('#extra-again').onclick=()=>practice?startPractice(d.mode):startExtra(d.kind);
@@ -220,7 +217,7 @@ function distractors(w,mode){const base=WORDS.filter(a=>a.id!==w.id && a.level==
  // 相同詞性優先，減少「完全不同類型」的選項；仍排除與目標中文直譯重複者
  const pos=x=>(x.speech||'').split(/[./]/)[0];const mainPos=pos(w);const same=shuffle(base.filter(x=>mainPos&&pos(x)===mainPos));const rest=shuffle(base.filter(x=>!same.includes(x)));const selected=[];const meanings=new Set([cnMain(w)]);
  for(const x of [...same,...rest]){if(mode==='e2c'&&meanings.has(cnMain(x)))continue;if(selected.length>=3)break;selected.push(x);meanings.add(cnMain(x));}return selected;}
-function renderQuiz(isExtra=false){view=isExtra?'extra-quiz':'quiz';clearTimeout(advanceTimer);advanceTimer=null;
+function renderQuiz(isExtra=false){view=isExtra?'extra-quiz':'quiz';clearTimeout(advanceTimer);advanceTimer=null;document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',isExtra&&S.extraSession?.kind==='practice'?b.dataset.practice===S.extraSession.mode:b.dataset.view==='home'));
  const d=isExtra?S.extraSession:sessionToday();if(!d)return showView('home');if(d.queue.length===0){if(isExtra){finishExtra(d);showExtraFinished(d);}else{finishDay(d);showFinished(d);}return;}
  const id=d.queue[0],w=WORDS_BY_ID.get(id);if(!w){d.queue.shift();persist();return renderQuiz(isExtra);}
  activeWordId=id;activeMode=questionMode(w,d);answered=false;const mode=activeMode;
@@ -327,7 +324,7 @@ async function installApp(){if(isStandalone()){notify('已經放到主畫面囉'
  if(installPrompt){const prompt=installPrompt;installPrompt=null;try{await prompt.prompt();await prompt.userChoice;}catch(e){console.warn('install prompt:',e);}return;}
  notify(isIOS()?'請用 Safari 分享選單 → 加入主畫面':'請在 Chrome 的選單中選「安裝或建立捷徑」，再選「安裝」');
 }
-function bindGlobalUI(){document.querySelectorAll('.nav-btn,#account-shortcut').forEach(b=>{if(!b.dataset.bound){b.addEventListener('click',()=>showView(b.dataset.view));b.dataset.bound='1';}});
+function bindGlobalUI(){document.querySelectorAll('.nav-btn[data-view],#account-shortcut').forEach(b=>{if(!b.dataset.bound){b.addEventListener('click',()=>showView(b.dataset.view));b.dataset.bound='1';}});document.querySelectorAll('.nav-btn[data-practice]').forEach(b=>{if(!b.dataset.bound){b.addEventListener('click',()=>startPractice(b.dataset.practice));b.dataset.bound='1';}});
  const install=document.getElementById('install-shortcut');if(install)install.addEventListener('click',installApp);
  window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;});
  window.addEventListener('online',()=>{if(cloudUser&&!cloudReady)handleLogin(cloudUser).catch(e=>console.warn(e));else if(cloudUser&&cloudReady&&pendingSync)queueProgressSync();else if(!cloudUser&&localKey!=='vocab-daily-v3:guest')notify('網路已恢復，重新開啟 App 並登入即可同步學習紀錄。');});
