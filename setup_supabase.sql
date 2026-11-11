@@ -40,7 +40,7 @@ create table if not exists public.official_words(id text primary key);
 create table if not exists public.day_plans (
  user_id uuid not null references auth.users(id) on delete cascade,
  study_date date not null,
- goal int not null check(goal in(15,30,50)),
+ goal int not null check(goal between 1 and 2005),
  started_at timestamptz not null default now(),
  primary key(user_id,study_date)
 );
@@ -54,7 +54,7 @@ create table if not exists public.daily_passes (
 create table if not exists public.daily_completions (
  user_id uuid not null references auth.users(id) on delete cascade,
  study_date date not null,
- goal int not null check(goal in(15,30,50)),
+ goal int not null check(goal between 1 and 2005),
  passed_count int not null,
  completed_at timestamptz not null default now(),
  primary key(user_id,study_date)
@@ -135,7 +135,7 @@ returns integer language plpgsql security definer set search_path='' as $$
 declare v_goal integer; v_today date := (now() at time zone 'Asia/Taipei')::date;
 begin
  if auth.uid() is null then raise exception '請先登入'; end if;
- if p_goal not in(15,30,50) then raise exception '配額僅限 15、30、50'; end if;
+ if p_goal < 1 or p_goal > 2005 then raise exception '每日配額須介於 1 至 2005'; end if;
  insert into public.day_plans(user_id,study_date,goal) values(auth.uid(),v_today,p_goal) on conflict do nothing;
  select goal into v_goal from public.day_plans where user_id=auth.uid() and study_date=v_today;
  return v_goal;

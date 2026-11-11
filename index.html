@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#edf5f8">
+  <meta name="theme-color" content="#fff3de">
   <meta name="description" content="依教育部英語文課綱附錄五建立的會考單字每日複習工具">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
   <title>單字日課｜會考 2000 字</title>
 </head>
 <body>
+<button id="mobile-menu-toggle" class="mobile-menu-toggle" type="button" aria-label="開啟選單" aria-expanded="false">☰</button>
 <div class="app-shell">
   <header class="topbar">
     <div class="brand"><div class="brand-symbol">Aa</div><div><strong>單字日課</strong><span>每天記得住，一路到會考</span></div></div>
@@ -31,6 +32,7 @@
 </div>
 <div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
 <script src="config.js"></script>
+<script src="word-data-full.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
 <script src="app.js" defer></script>
 </body>
